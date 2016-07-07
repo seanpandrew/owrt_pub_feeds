@@ -9,20 +9,19 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mosquitto
-PKG_VERSION:=1.4.9
+PKG_VERSION:=1.4.50
 PKG_RELEASE:=1
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=LICENSE.txt
 
-#PKG_REV:=1a14f6fed585e0bb769932a7938cacec9d76d97a
+PKG_REV:=4c2e06c3b5b18f4c982ca4983ee30b3e575e1773
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-#PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-#PKG_SOURCE_URL:=http://git.eclipse.org/gitroot/mosquitto/org.eclipse.mosquitto.git
-# TODO - get @ECLIPSE mirror support to work...
-PKG_SOURCE_URL:=http://mosquitto.org/files/source/
-#PKG_SOURCE_PROTO:=git
-#PKG_SOURCE_VERSION:=$(PKG_REV)
-PKG_MD5SUM:=67943e2c5afebf7329628616eb2c41c5
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_URL:=http://github.com/remakeelectric/mosquitto.git
+#PKG_SOURCE_URL:=http://mosquitto.org/files/source/
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_VERSION:=$(PKG_REV)
+#PKG_MD5SUM:=67943e2c5afebf7329628616eb2c41c5
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk

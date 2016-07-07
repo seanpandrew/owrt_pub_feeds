@@ -64,6 +64,7 @@ convert_mosq_general() {
 	append_if "$1" protocol
 	append_if "$1" max_inflight_messages
 	append_if "$1" max_queued_messages
+	append_if "$1" max_queued_bytes
 }
 
 convert_persistence() {
