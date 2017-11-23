@@ -20,6 +20,17 @@ local function msleep(ms)
     socket.select(nil, nil, ms / 1000)
 end
 
+--- Split a string, inserted onto the global string object!
+--- @param sep separator to use
+--- from the lua users wiki
+function string:split(sep)
+    local sep, fields = sep or ":", {}
+    local pattern = string.format("([^%s]+)", sep)
+    self:gsub(pattern, function(c) fields[#fields+1] = c end)
+    return fields
+end
+
+
 local args = pl.lapp [[
   Basic output to dexma
   if key_file is provided, the environment var is ignored.
@@ -142,50 +153,60 @@ local function handle_message_data(mid, topic, jpayload, qos, retain)
         ugly.info("Ignoring unsuitable json format on topic: %s", topic);
         return
     end
-    if payload.error then ugly.debug("Ignoring failed reading"); return end
+    if payload.hwc.error then
+        ugly.debug("Ignoring failed reading")
+        return
+    end
     if payload.hwc.typeOfMeasurementPoints ~= "generic" then
         ugly.debug("Ignoring non senml reading")
         return
     end
 
-    -- FIXME - needs to properly handle senml here.  Use cabinet model to save data into the cache for the "cabinet" device
-    -- sort on insertion.
-    -- without a cabinet model, just present it as is.
-	-- each message needs to be broken into potentially _many_ virtual devices/ids with their data.0
-	-- we want to keep the "cache[devid]" map to have the _output_ dexma names.
-	-- or, just keep a by device id here, and keep the "reading" number as well, socket
-	local sample_entry = {
-		currents = 1
-	}
-
-	-- no, mark 3
-	-- goal is for "process cach e
-
-
-    if not cache[devid] then
-	cache[devid] = {
-		sumamps = {0,0,0},
-		countamps = {0,0,0},
-		maxamps = {0,0,0},
-		maxamps_tsms = {0,0,0},
-	}
+    if not payload.senml or not payload.senml.e then
+        -- means checks above are busted!
+        ugly.warning("generic, but not senml, no e, no error on topic: %s, msg: %s", topic, jpayload)
     end
-    cache[devid].ts = payload.timestamp_ms
-    cache[devid].kwh = payload.cumulative_wh/1000
-    cache[devid].kvarh = payload.cumulative_varh/1000  -- todo only if EM!
-    for i = 1,3 do
-	cache[devid].sumamps[i] = cache[devid].sumamps[i] + payload.phases[i].current
-	cache[devid].countamps[i] = cache[devid].countamps[i]+1
-	if payload.phases[i].current > cache[devid].maxamps[i] then
-		cache[devid].maxamps[i] = payload.phases[i].current
-		cache[devid].maxamps_tsms[i] = payload.timestamp_ms
-	end
+
+    -- iterate the senml, creating "cache keys" as appropriate
+    for _,e in ipairs(payload.senml.e) do
+        -- save only what we're interested in, ignore the rest.
+        local n = e.n:split("/")[1]
+        local idx = e.n:split("/")[2]
+        -- TODO - skip non-numeric indices!
+        if not idx and (n == "wh_cumulative" or n == "varh_cumulative" or n == "frequency") then
+            idx = 1
+        end
+        if idx then
+            -- current, summable kwhs,  etc
+            if n == "wh_cumulative" then
+                local key = string.format("%s-%s-%d", devid, "kwh_cumulative", idx)
+                cache[key] = e.v / 1000
+            end
+            if n == "varh_cumulative" then
+                local key = string.format("%s-%s-%d", devid, "kvarh_cumulative", idx)
+                cache[key] = e.v / 1000
+            end
+            if n == "frequency" then
+                local key = string.format("%s-%s", devid, "frequency")
+                cache[key] = e.v
+            end
+            if n == "current" then
+                local key_max = string.format("%s-%s-%d", devid, "currentmax", idx)
+                local key_sum = string.format("%s-%s-%d", devid, "currentsum", idx)
+                local key_count = string.format("%s-%s-%d", devid, "currentcount", idx)
+                if cache[key_max] then
+                    if e.v > cache[key_max] then cache[key_max] = e.v end
+                else
+                    cache[key_max] = e.v
+                end
+                if not cache[key_count] then cache[key_count] = 0 end
+                cache[key_count] = cache[key_count] + 1
+                if not cache[key_sum] then cache[key_sum] = 0 end
+                cache[key_sum] = cache[key_sum] + e.v
+            end
+        end
     end
-		
-    --cache.volts = payload.phases[1].voltage
-    --cache.amps = payload.phases[1].current
-    --cache.pf = payload.phases[1].pf
-    --cache.kwh = payload.cumulative_wh / 1000
+
 end
 
 local function print_sample_data_for_folding()
@@ -294,6 +315,11 @@ end
 
 local function process_cache2(cache)
 	local data = {}
+    ugly.debug("dumping cabinet model prior to processing: %s", pl.pretty.write(cabinet_model))
+    ugly.debug("dumping keys/values in cache")
+    for k,v in pairs(cache) do
+        print(k,v)
+    end
 	-- yes, we _only_ send values to dexma if they are in the cabinet model
     for _,dev in pairs(cabinet_model) do
         for _,branch in pairs(dev) do
@@ -310,15 +336,17 @@ local function process_cache2(cache)
             -- but needs to handle getting just the top level one too!
             -- we can handle that at data insert time by just inserting it for point 1?
             local kwh, kvarh
-            for i,point in pairs(branch.points) do
+            for _,point in pairs(branch.points) do
                 -- +1 is because cabinet readings are zero based, but all senml is 1 based
-                local key_kwh = string.format("%s-%s-%d", point.deviceid, "wh_cumulative", point.reading + 1)
-                local key_kvarh = string.format("%s-%s-%d", point.deviceid, "varh_cumulative", point.reading + 1)
+                local key_kwh = string.format("%s-%s-%d", point.deviceid, "kwh_cumulative", point.reading + 1)
+                local key_kvarh = string.format("%s-%s-%d", point.deviceid, "kvarh_cumulative", point.reading + 1)
                 if cache[key_kwh] then
+                    ugly.debug("including kwh from key: %s", key_kwh)
                     if not kwh then kwh = 0 end
                     kwh = kwh + cache[key_kwh]
                 end
                 if cache[key_kvarh] then
+                    ugly.debug("including kvarh from key: %s", key_kvarh)
                     if not kvarh then kvarh = 0 end
                     kvarh = kvarh + cache[key_kvarh]
                 end
@@ -326,11 +354,12 @@ local function process_cache2(cache)
             if kwh then table.insert(entry.values, {p=402, v=kwh}); ugly.debug("inserted kwh") end
             if kvarh then table.insert(entry.values, {p=404, v=kvarh}); ugly.debug("inserted kvarh")end
 
-            local key_freq = string.format("%s-%s", point.deviceid, "frequency")
-            if cache[key_freq] then
-                table.insert(entry.values, {p=414, v=cache[key_freq]})
-                ugly.debug("inserted freq")
-            end
+            -- fixme what is the key for freq again? there's no point
+            --local key_freq = string.format("%s-%s", point.deviceid, "frequency")
+            --if cache[key_freq] then
+            --    table.insert(entry.values, {p=414, v=cache[key_freq]})
+            --    ugly.debug("inserted freq")
+            --end
 
             -- ok, end of "top level" values
             if #entry.values > 0 then
@@ -339,25 +368,25 @@ local function process_cache2(cache)
             end
 
             -- Any variable that is per point within a branch
-            for i,point in pairs(branch.points) do
+            for _,point in pairs(branch.points) do
                 -- need new DIDs for this in dexma land.
                 local entry = {
-                    did = string.format("%s-%s-%d", branch.cabinet, branch.label, i),
+                    did = string.format("%s-%s-%d", branch.cabinet, branch.label, point.reading + 1),
                     sqn = cfg.sqn,
                     ts = ts,
                     values = {},
                 }
                 ugly.debug("scanning for per point data on %s", entry.did)
-                local key_max = string.format("%s-%s-%d", point.deviceid, "currentmax", i)
+                local key_max = string.format("%s-%s-%d", point.deviceid, "currentmax", point.reading + 1)
                 if cache[key_max] then
-                    ugly.debug("adding current-max")
+                    ugly.debug("adding current-max from key: %s", key_max)
                     table.insert(entry.values, {p=425, v=cache[key_max]})
                 end
                 -- working out "average" current like is only valid if we received _all_ readings at equal timings
-                local key_sum = string.format("%s-%s-%d", point.deviceid, "currentsum", i)
-                local key_count = string.format("%s-%s-%d", point.deviceid, "currentcount", i)
+                local key_sum = string.format("%s-%s-%d", point.deviceid, "currentsum", point.reading + 1)
+                local key_count = string.format("%s-%s-%d", point.deviceid, "currentcount", point.reading + 1)
                 if cache[key_sum] and cache[key_count] then
-                    ugly.debug("adding current-average")
+                    ugly.debug("adding current-average from key: %s/%s", key_sum, key_count)
                     table.insert(entry.values, {p=426, v=cache[key_sum] / cache[key_count]})
                 end
 
@@ -435,8 +464,8 @@ end
 
 local function process()
 	if not validate_cache(cache) then return end
-	--local data = process_cache(data)
-	local data = process_cache2(data)
+	--local data = process_cache(cache)
+	local data = process_cache2(cache)
 	-- clear the cache out, we've posted it now
 	cache = {}
 	cfg.last_send = nowts
