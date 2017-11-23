@@ -143,6 +143,11 @@ local function handle_message_data(mid, topic, jpayload, qos, retain)
         return
     end
 
+    if pl.tablex.size(cabinet_model) == 0 then
+        ugly.debug("Skipping data processing, no cabinet model")
+        return false
+    end
+
     local devid = pl.stringx.split(topic, "/")[5]
     local payload, err = json.decode(jpayload)
     if not payload then
