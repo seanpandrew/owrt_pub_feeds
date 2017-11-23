@@ -52,7 +52,10 @@ local cfg = {
     time_start = nil,
 }
 
+--- cache of live data, structured for easy retrieval. we nuke this after each post
 local cache = {}
+---
+local cabinet_model = {}
 
 ugly.initialize(cfg.APP_NAME, args.verbose or 4)
 
@@ -92,10 +95,34 @@ mqtt.ON_CONNECT = function(success, rc, str)
     cfg.time_start = Pt.time()
 end
 
---- Create/update our cached of the cabinet model
--- we use this data to group breakers/channels and provide "meaningful" names up to dexma
+--- Create/update our cache of the cabinet model.
+--- we use this data to group breakers/channels and provide "meaningful" names up to dexma
 local function handle_message_cabinet(mid, topic, jpayload, qos, retain)
-    ugly.debug("processing cabinet data from topic: %s", topic)
+	ugly.debug("processing cabinet data from topic: %s", topic)
+	local payload, err = json.decode(jpayload)
+	if not payload then
+		ugly.warning("Invalid json in message on topic: %s, %s", topic, err)
+		return
+	end
+
+	local cabinet = payload.cabinet
+	if not cabinet then
+		ugly.warning("No cabinet in cabinet model, ignoring on topic: %s", topic)
+		return
+	end
+	local devid = pl.stringx.split(topic, "/")[5]
+	if not devid then
+		ugly.warning("No deviceid in topic?! can't assign to cabinet model")
+		return
+	end
+
+	-- if there is an existing cabinet model for this device, just _replace_ it wholesale.
+	cabinet_model[devid] = {}
+    -- just keep the original branches, with a cabinet pointer on each one
+    for _,b in pairs(payload.branches) do
+        b.cabinet = cabinet
+        table.insert(cabinet_model[devid], b)
+    end
 end
 
 local function handle_message_data(mid, topic, jpayload, qos, retain)
@@ -124,6 +151,16 @@ local function handle_message_data(mid, topic, jpayload, qos, retain)
     -- FIXME - needs to properly handle senml here.  Use cabinet model to save data into the cache for the "cabinet" device
     -- sort on insertion.
     -- without a cabinet model, just present it as is.
+	-- each message needs to be broken into potentially _many_ virtual devices/ids with their data.0
+	-- we want to keep the "cache[devid]" map to have the _output_ dexma names.
+	-- or, just keep a by device id here, and keep the "reading" number as well, socket
+	local sample_entry = {
+		currents = 1
+	}
+
+	-- no, mark 3
+	-- goal is for "process cach e
+
 
     if not cache[devid] then
 	cache[devid] = {
@@ -151,18 +188,50 @@ local function handle_message_data(mid, topic, jpayload, qos, retain)
     --cache.kwh = payload.cumulative_wh / 1000
 end
 
+local function print_sample_data_for_folding()
 --[[
 --cabinet message samples - rayley meter, combined mains
-status/local/json/cabinet/0 {"branches":[{"label":"DeskGreen","ampsize":"200","points":[{"phase":1,"reading":0,"deviceid":"0"},{"phase":2,"reading":1,"deviceid":"0"},{"phase":3,"reading":2,"deviceid":"0"}]}],"cabinet":"Q29","version":0.2,"type":"profile"}
+status/local/json/cabinet/0 {"branches":[
+{"label":"DeskGreen","ampsize":"200","points":[
+   {"phase":1,"reading":0,"deviceid":"0"},
+   {"phase":2,"reading":1,"deviceid":"0"},
+   {"phase":3,"reading":2,"deviceid":"0"}
+   ]}
+],"cabinet":"Q29","version":0.2,"type":"profile"}
 
 -- EM, unmerged points
-status/local/json/cabinet/E643E5EE2391 {"branches":[{"ampsize":"80","label":"91/1","points":[{"phase":1,"reading":0,"deviceid":"E643E5EE2391"}]},{"ampsize":"80","label":"91/2","points":[{"phase":2,"reading":1,"deviceid":"E643E5EE2391"}]},{"ampsize":"80","label":"91/3","points":[{"phase":3,"reading":2,"deviceid":"E643E5EE2391"}]}],"cabinet":"Q29","version":0.2,"type":"profile"}
+status/local/json/cabinet/E643E5EE2391
+{"branches":[
+{"ampsize":"80","label":"91/1","points":[{"phase":1,"reading":0,"deviceid":"E643E5EE2391"}]},
+{"ampsize":"80","label":"91/2","points":[{"phase":2,"reading":1,"deviceid":"E643E5EE2391"}]},
+{"ampsize":"80","label":"91/3","points":[{"phase":3,"reading":2,"deviceid":"E643E5EE2391"}]}
+],
+"cabinet":"Q29","version":0.2,"type":"profile"}
 
 -- EB12, 3 unmerged, 2x3, 3 unmerged
-status/local/json/cabinet/462C5B1C0FBC {"branches":[{"ampsize":16,"label":"bc/1","points":[{"phase":1,"reading":0,"deviceid":"462C5B1C0FBC"}]},{"ampsize":16,"label":"bc/2","points":[{"phase":2,"reading":1,"deviceid":"462C5B1C0FBC"}]},{"ampsize":16,"label":"bc/3","points":[{"phase":3,"reading":2,"deviceid":"462C5B1C0FBC"}]},{"label":"bc/4","ampsize":16,"points":[{"phase":1,"reading":3,"deviceid":"462C5B1C0FBC"},{"phase":2,"reading":4,"deviceid":"462C5B1C0FBC"},{"phase":3,"reading":5,"deviceid":"462C5B1C0FBC"},{"phase":1,"reading":6,"deviceid":"462C5B1C0FBC"},{"phase":2,"reading":7,"deviceid":"462C5B1C0FBC"},{"phase":3,"reading":8,"deviceid":"462C5B1C0FBC"}]},{"label":"bc/4","ampsize":16,"points":[{"phase":1,"reading":3,"deviceid":"462C5B1C0FBC"},{"phase":2,"reading":4,"deviceid":"462C5B1C0FBC"},{"phase":3,"reading":5,"deviceid":"462C5B1C0FBC"},{"phase":1,"reading":6,"deviceid":"462C5B1C0FBC"},{"phase":2,"reading":7,"deviceid":"462C5B1C0FBC"},{"phase":3,"reading":8,"deviceid":"462C5B1C0FBC"}]},{"ampsize":16,"label":"bc/10","points":[{"phase":1,"reading":9,"deviceid":"462C5B1C0FBC"}]},{"ampsize":16,"label":"bc/11","points":[{"phase":2,"reading":10,"deviceid":"462C5B1C0FBC"}]},{"ampsize":16,"label":"bc/12","points":[{"phase":3,"reading":11,"deviceid":"462C5B1C0FBC"}]}],"cabinet":"Q29","version":0.2,"type":"profile"}
+status/local/json/cabinet/462C5B1C0FBC
+
+{"branches":[
+{"ampsize":16,"label":"bc/1","points":[{"phase":1,"reading":0,"deviceid":"462C5B1C0FBC"}]},
+{"ampsize":16,"label":"bc/2","points":[{"phase":2,"reading":1,"deviceid":"462C5B1C0FBC"}]},
+{"ampsize":16,"label":"bc/3","points":[{"phase":3,"reading":2,"deviceid":"462C5B1C0FBC"}]},
+{"label":"bc/4","ampsize":16,"points":[
+   {"phase":1,"reading":3,"deviceid":"462C5B1C0FBC"},
+   {"phase":2,"reading":4,"deviceid":"462C5B1C0FBC"},
+   {"phase":3,"reading":5,"deviceid":"462C5B1C0FBC"},
+]},
+{"label":"bc/7","ampsize":16,"points":[
+   {"phase":1,"reading":6,"deviceid":"462C5B1C0FBC"},
+   {"phase":2,"reading":7,"deviceid":"462C5B1C0FBC"},
+   {"phase":3,"reading":8,"deviceid":"462C5B1C0FBC"}]},
+{"ampsize":16,"label":"bc/10","points":[{"phase":1,"reading":9,"deviceid":"462C5B1C0FBC"}]},
+{"ampsize":16,"label":"bc/11","points":[{"phase":2,"reading":10,"deviceid":"462C5B1C0FBC"}]},
+{"ampsize":16,"label":"bc/12","points":[{"phase":3,"reading":11,"deviceid":"462C5B1C0FBC"}]}
+],"cabinet":"Q29","version":0.2,"type":"profile"}
+
 
 --]]
-
+end
 
 
 mqtt.ON_MESSAGE = function(mid, topic, jpayload, qos, retain)
@@ -223,20 +292,108 @@ local function is_interval(ts, intmin)
 end
 
 
-local function process_cache(cache)
+local function process_cache2(cache)
+	local data = {}
+	-- yes, we _only_ send values to dexma if they are in the cabinet model
+    for _,dev in pairs(cabinet_model) do
+        for _,branch in pairs(dev) do
+            -- make a dexma entry for each _branch_ in cabinet model
+            local entry = {
+                did = string.format("%s-%s", branch.cabinet, branch.label),
+                sqn = cfg.sqn,
+                ts = ts,
+                values = {},
+            }
+            ugly.debug("scanning cache for 'branch': %s", entry.did)
+            -- go and sum any kwh/kvarh values we found for this _branch_
+            -- This sum by point will work for wh from each channel on power bar,
+            -- but needs to handle getting just the top level one too!
+            -- we can handle that at data insert time by just inserting it for point 1?
+            local kwh, kvarh
+            for i,point in pairs(branch.points) do
+                -- +1 is because cabinet readings are zero based, but all senml is 1 based
+                local key_kwh = string.format("%s-%s-%d", point.deviceid, "wh_cumulative", point.reading + 1)
+                local key_kvarh = string.format("%s-%s-%d", point.deviceid, "varh_cumulative", point.reading + 1)
+                if cache[key_kwh] then
+                    if not kwh then kwh = 0 end
+                    kwh = kwh + cache[key_kwh]
+                end
+                if cache[key_kvarh] then
+                    if not kvarh then kvarh = 0 end
+                    kvarh = kvarh + cache[key_kvarh]
+                end
+            end
+            if kwh then table.insert(entry.values, {p=402, v=kwh}); ugly.debug("inserted kwh") end
+            if kvarh then table.insert(entry.values, {p=404, v=kvarh}); ugly.debug("inserted kvarh")end
+
+            local key_freq = string.format("%s-%s", point.deviceid, "frequency")
+            if cache[key_freq] then
+                table.insert(entry.values, {p=414, v=cache[key_freq]})
+                ugly.debug("inserted freq")
+            end
+
+            -- ok, end of "top level" values
+            if #entry.values > 0 then
+                ugly.debug("had branch level data, adding to group package")
+                table.insert(data, entry)
+            end
+
+            -- Any variable that is per point within a branch
+            for i,point in pairs(branch.points) do
+                -- need new DIDs for this in dexma land.
+                local entry = {
+                    did = string.format("%s-%s-%d", branch.cabinet, branch.label, i),
+                    sqn = cfg.sqn,
+                    ts = ts,
+                    values = {},
+                }
+                ugly.debug("scanning for per point data on %s", entry.did)
+                local key_max = string.format("%s-%s-%d", point.deviceid, "currentmax", i)
+                if cache[key_max] then
+                    ugly.debug("adding current-max")
+                    table.insert(entry.values, {p=425, v=cache[key_max]})
+                end
+                -- working out "average" current like is only valid if we received _all_ readings at equal timings
+                local key_sum = string.format("%s-%s-%d", point.deviceid, "currentsum", i)
+                local key_count = string.format("%s-%s-%d", point.deviceid, "currentcount", i)
+                if cache[key_sum] and cache[key_count] then
+                    ugly.debug("adding current-average")
+                    table.insert(entry.values, {p=426, v=cache[key_sum] / cache[key_count]})
+                end
+
+                -- if we got anything from a "sub point" then add it in
+                if #entry.values > 0 then
+                    ugly.debug("had sub point level data, adding to group package")
+                    table.insert(data, entry)
+                end
+            end
+        end
+	end
+
+	-- TODO temperature sensors have no branch, but have a cabinet
+	-- if desired, we could publish temperature via a new entry there.
+	return data
+
+end
+
+
+local function validate_cache(cache)
 	if pl.tablex.size(cache) == 0 then
 		ugly.debug("Skipping post, no data in cache")
-		return
+		return false
 	end
 	local nowts = Pt.time()
 	if not is_interval(nowts, cfg.POST_INTERVAL_MINUTES) then
-		return
+		return false
 	end
 	if nowts - cfg.last_send < 2 * 60 then
 		ugly.warning("15minute interval less than 2 minutes since last post?!")
-		return
+		return false
 	end
+	return true
+end
 
+local function process_cache(cache)
 	local data = {}
 	-- dexma wants usage from 08:00 to 08:15 to report at 08:00
 	local ts = Pt.strftime('%Y-%m-%dT%H:%M:00Z', Pt.gmtime(nowts - cfg.POST_INTERVAL_MINUTES*60))
@@ -273,6 +430,13 @@ local function process_cache(cache)
 			table.insert(data, ph)
 		end
 	end
+	return data
+end
+
+local function process()
+	if not validate_cache(cache) then return end
+	--local data = process_cache(data)
+	local data = process_cache2(data)
 	-- clear the cache out, we've posted it now
 	cache = {}
 	cfg.last_send = nowts
@@ -285,6 +449,6 @@ end
 while true do
 	-- Check on things every 45 secs (will always make sure we hit within each 15minute window)
 	Puni.sleep(45)
-	process_cache(cache)
+	process()
 end
 
